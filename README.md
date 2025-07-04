@@ -620,6 +620,10 @@ if (nrow(academically_strong_dropouts) == 0) {
     scale_y_continuous(breaks = seq(0, 1, by = 0.25)) +
     coord_cartesian(xlim = c(0, 0.49))
 }
+```
+![](graph2.png)<!-- -->
+
+``` r
 ## Prediction Quadrants for Dropouts
 
 This quadrant plot categorizes actual dropouts based on their predicted probabilities from both the Academic and Combined models. It visually distinguishes between cases where both models detected dropout risk, where only one did, or where both missed.
@@ -689,6 +693,10 @@ if (nrow(dropout_data) == 0) {
     ) +
     coord_cartesian(xlim = c(0, 1), ylim = c(0, 1))
 }
+```
+![](graph3.png)<!-- -->
+
+``` r
 ## Dropout Probability by Application Order
 
 This line plot illustrates how the probability of dropout varies based on a student's application order (priority of their degree choice). This provides insights into the relationship between a student's initial preferences and their likelihood of persisting in their studies.
@@ -725,3 +733,85 @@ ggplot(dropout_by_order, aes(x = factor(application_order), y = dropout_probabil
     axis.title.y = element_text(size = 12)
   )
 ```
+![](graph4.png)<!-- -->
+
+```r
+
+## Model Performance Comparison Table
+R
+# Compute precision and F1-score for both models
+precision_academic <- as.numeric(cm_academic$byClass["Precision"])
+precision_combined <- as.numeric(cm$byClass["Precision"])
+
+f1_academic <- as.numeric(cm_academic$byClass["F1"])
+f1_combined <- as.numeric(cm$byClass["F1"])
+
+# Add the new metrics to the results dataframe
+results_df <- data.frame(
+  Model = c("Academic", "Combined"),
+  Accuracy = c(
+    as.numeric(cm_academic$overall["Accuracy"]),
+    as.numeric(cm$overall["Accuracy"])
+  ),
+  Precision = c(precision_academic, precision_combined),
+  Sensitivity = c(
+    as.numeric(cm_academic$byClass["Sensitivity"]),
+    as.numeric(cm$byClass["Sensitivity"])
+  ),
+  F1 = c(f1_academic, f1_combined),
+  AUC = c(
+    as.numeric(auc_value_academic),
+    as.numeric(auc_value)
+  ),
+  McFadden_R2 = c(
+    as.numeric(1 - (logLik(logistic_model_academic) / logLik(null_model))),
+    as.numeric(1 - (logLik(logistic_model) / logLik(null_model)))
+  )
+)
+
+# Round metrics for presentation
+results_df <- results_df %>%
+  mutate(
+    Accuracy = round(Accuracy, 3),
+    Precision = round(Precision, 3),
+    Sensitivity = round(Sensitivity, 3),
+    F1 = round(F1, 3),
+    AUC = round(AUC, 3),
+    McFadden_R2 = round(McFadden_R2, 3)
+  )
+
+# Build and format the updated gt table
+gt_table <- results_df %>%
+  gt() %>%
+  tab_header(
+    title = "Model Performance Comparison"
+  ) %>%
+  cols_label(
+    Model = "Model",
+    Accuracy = "Accuracy",
+    Precision = "Precision",
+    Sensitivity = "Sensitivity",
+    F1 = "F1 Score",
+    AUC = "AUC",
+    McFadden_R2 = "McFadden R²"
+  ) %>%
+  fmt_number(
+    columns = c(Accuracy, Precision, Sensitivity, F1, AUC, McFadden_R2),
+    decimals = 3
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = everything()
+  ) %>%
+  tab_options(
+    table.border.top.width = px(2),
+    table.border.bottom.width = px(2),
+    column_labels.border.bottom.width = px(1),
+    table_body.hlines.width = px(1),
+    table_body.vlines.width = px(1)
+  )
+
+# Display the table
+gt_table
+```
+![](graph5.png)<!-- -->
