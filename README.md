@@ -43,7 +43,7 @@ library(ggplot2)
 library(broom)
 library(gt)
 
-
+```
 ## Read Tables
 
 This project uses several R packages for data manipulation, modeling, and visualization. All necessary libraries are loaded at the beginning of the script.
