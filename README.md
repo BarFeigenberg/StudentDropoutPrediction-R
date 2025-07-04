@@ -53,10 +53,11 @@ This project uses several R packages for data manipulation, modeling, and visual
 set.seed(42)
 Load and Prepare Data
 The dataset students_dropout_academic_success.csv is loaded, column names are cleaned, and the data is filtered to include only Dropout or Graduate outcomes. The target variable is then converted to a factor, with Graduate set as the reference level for logistic regression.
+```
+## Load dataset, clean column names, and filter to Dropout or Graduate only
 
-R
+``` r
 
-# Load dataset, clean column names, and filter to Dropout or Graduate only
 df <- read_csv("data/students_dropout_academic_success.csv", show_col_types = FALSE) %>%
   clean_names() %>%
   filter(target %in% c("Dropout", "Graduate"))
@@ -66,9 +67,10 @@ df$target <- factor(df$target, levels = c("Graduate", "Dropout"))
 Feature Engineering: Academic Variables
 New features are created to capture various aspects of academic performance based on course results from both semesters. These include average_grade_year, grade_difference, total_approved, total_enrolled, course_success_rate, total_evaluated, and exam_attempt_rate.
 
-R
+```
+## Create academic performance features based on course results in both semesters
 
-# Create academic performance features based on course results in both semesters
+``` r
 df <- df %>%
   mutate(
     average_grade_year = rowMeans(
@@ -84,10 +86,10 @@ df <- df %>%
   )
 Feature Engineering: Categorical Variables
 Categorical variables such as gender, application_mode, and age_at_enrollment are recoded into more manageable groups and converted to factors for modeling.
+```
+## Recode categorical variables: gender, application mode groups, and age groups
 
-R
-
-# Recode categorical variables: gender, application mode groups, and age groups
+``` r
 # These transformations prepare categorical features for modeling
 df <- df %>%
   mutate(
@@ -121,10 +123,10 @@ df$application_mode_group <- factor(df$application_mode_group)
 df$age_group <- factor(df$age_group, levels = c("Under 18", "19-20", "21-25", "Above 26"))
 Select Features for Modeling
 A subset of the engineered features, including admission_grade, grade_difference, exam_attempt_rate, average_grade_year, course_success_rate, scholarship_holder, debtor, tuition_fees_up_to_date, gender, age_group, and application_mode_group, along with the target variable, are selected for model training.
+```
+## Select relevant features for the logistic regression models
 
-R
-
-# Select relevant features for the logistic regression models
+``` r
 # Includes academic performance, financial status, demographics, and target variable
 model_data <- df %>%
   select(
@@ -143,10 +145,10 @@ model_data <- df %>%
   )
 Split Data into Training and Testing Sets
 The model_data is split into 80% training and 20% testing sets. createDataPartition from the caret package ensures that the stratification of the target variable is maintained across both sets, preserving the proportion of dropouts and graduates.
+```
+## Split the data into training (80%) and testing (20%) sets, stratified by target variable
 
-R
-
-# Split the data into training (80%) and testing (20%) sets, stratified by target variable
+``` r
 train_index <- createDataPartition(model_data$target, p = 0.8, list = FALSE)
 train_data <- model_data[train_index, ]
 test_data <- model_data[-train_index, ]
@@ -158,10 +160,10 @@ for (col in c("age_group", "application_mode_group", "gender")) {
 }
 Perform PCA on Academic and Financial Features
 Principal Component Analysis (PCA) is applied to reduce the dimensionality and handle multicollinearity within academic performance features (average_grade_year, course_success_rate) and financial status features (scholarship_holder, debtor, tuition_fees_up_to_date). The first principal component for each set is extracted as academic_achievement and financial_score respectively.
+```
+## Perform PCA to reduce dimensionality of correlated academic performance features
 
-R
-
-# Perform PCA to reduce dimensionality of correlated academic performance features
+``` r
 academic_cols <- c("average_grade_year", "course_success_rate")
 pca_academic <- prcomp(train_data[, academic_cols], scale. = TRUE)
 train_data$academic_achievement <- predict(pca_academic, newdata = train_data[, academic_cols])[, 1]
@@ -174,10 +176,10 @@ train_data$financial_score <- predict(pca_financial, newdata = train_data[, fina
 test_data$financial_score <- predict(pca_financial, newdata = test_data[, financial_cols])[, 1]
 Normalize Numeric Features
 Selected numeric features, including the newly created PCA scores, are normalized using centering and scaling (preProcess from caret) to ensure they contribute equally to the model. Original features used in PCA are removed to avoid collinearity.
+```
+## Normalize numerical features (including PCA scores) using centering and scaling
 
-R
-
-# Normalize numerical features (including PCA scores) using centering and scaling
+``` r
 numeric_cols <- c("admission_grade", "grade_difference", "exam_attempt_rate",
                   "academic_achievement", "financial_score")
 preproc <- preProcess(train_data[, numeric_cols], method = c("center", "scale"))
@@ -193,9 +195,10 @@ We train and evaluate two logistic regression models: an "Academic Model" using 
 Academic Model
 A logistic regression model is trained using only academic-related features: academic_achievement, admission_grade, grade_difference, and exam_attempt_rate. The model's summary and the contribution of each variable (using drop1) are displayed.
 
-R
+```
+## Train logistic regression model using only academic-related features
 
-# Train logistic regression model using only academic-related features
+``` r
 logistic_model_academic <- glm(target ~ academic_achievement + admission_grade + grade_difference + exam_attempt_rate, data = train_data, family = binomial)
 summary(logistic_model_academic)  # Display coefficients and significance
 # Call:
@@ -235,10 +238,10 @@ drop1(logistic_model_academic, test = "Chisq")  # Test contribution of each vari
 # ---
 # Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
 The Academic Model's performance is evaluated using a confusion matrix, ROC curve, and AUC score. McFadden's R² is also computed as a measure of model fit.
+```
+## Predict dropout probabilities and classify based on 0.5 threshold
 
-R
-
-# Predict dropout probabilities and classify based on 0.5 threshold
+``` r
 predicted_probs_academic <- predict(logistic_model_academic, newdata = test_data, type = "response")
 predicted_classes_academic <- ifelse(predicted_probs_academic > 0.5, "Dropout", "Graduate") %>% as.factor()
 
@@ -271,26 +274,28 @@ cm_academic
 #       Balanced Accuracy : 0.7140
 #
 #        'Positive' Class : Dropout
-R
+```
+## Compute ROC curve and AUC for academic model
 
-# Compute ROC curve and AUC for academic model
+``` r
 roc_academic <- roc(test_data$target, predicted_probs_academic, levels = c("Graduate", "Dropout"), direction = "<")
 auc_value_academic <- auc(roc_academic)
 print(paste("Academic Model AUC:", round(auc_value_academic, 3)))
 # [1] "Academic Model AUC: 0.825"
-R
+```
+## Calculate McFadden's pseudo-R² as a measure of model fit
 
-# Calculate McFadden's pseudo-R² as a measure of model fit
+``` r
 null_model <- glm(target ~ 1, data = train_data, family = binomial)
 R2_McFadden <- 1 - (logLik(logistic_model_academic) / logLik(null_model))
 print(paste("McFadden's R²:", round(R2_McFadden, 3)))
 # [1] "McFadden's R²: 0.321"
 Combined Model
 A logistic regression model is trained using all selected features (academic_achievement, admission_grade, grade_difference, exam_attempt_rate, financial_score, gender, age_group, application_mode_group). Its summary and variable contributions are also examined.
+```
+## Train logistic regression model using all selected features (academic + non-academic)
 
-R
-
-# Train logistic regression model using all selected features (academic + non-academic)
+``` r
 logistic_model <- glm(target ~ ., data = train_data, family = binomial)
 summary(logistic_model)  # View model summary
 # Call:
@@ -343,10 +348,11 @@ drop1(logistic_model, test = "Chisq")  # Assess variable contributions
 # ---
 # Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
 The combined model's performance is evaluated with a confusion matrix, ROC curve, and AUC score. McFadden's R² provides a measure of overall model fit.
+```
+## Predict on test set using combined model and compute confusion matrix
 
-R
+``` r
 
-# Predict on test set using combined model and compute confusion matrix
 predicted_probs <- predict(logistic_model, newdata = test_data, type = "response")
 predicted_classes <- factor(ifelse(predicted_probs > 0.5, "Dropout", "Graduate"), levels = levels(test_data$target))
 
@@ -378,9 +384,10 @@ print(cm)
 #       Balanced Accuracy : 0.7703
 #
 #        'Positive' Class : Dropout
-R
+```
+## Calculate ROC curve and AUC for combined model predictions
 
-# Calculate ROC curve and AUC for combined model predictions
+``` r
 roc_obj <- roc(test_data$target, predicted_probs, levels = c("Graduate", "Dropout"), direction = "<")
 auc_value <- auc(roc_obj)
 print(paste("AUC:", round(auc_value, 3)))
@@ -394,10 +401,10 @@ print(paste("McFadden's R²:", round(R2_McFadden, 3)))
 # [1] "McFadden's R²: 0.348"
 Model Performance Comparison
 A table summarizing key performance metrics (Accuracy, Precision, Sensitivity, F1 Score, AUC, McFadden R²) for both the Academic and Combined models. This provides a clear quantitative comparison of their effectiveness.
+```
+## Compute precision and F1-score for both models
 
-R
-
-# Compute precision and F1-score for both models
+``` r
 precision_academic <- as.numeric(cm_academic$byClass["Precision"])
 precision_combined <- as.numeric(cm$byClass["Precision"])
 
@@ -481,10 +488,10 @@ Combined	0.845	0.805	0.590	0.681	0.887	0.348
 Key Findings and Visualizations
 Relative Importance of Features
 This bar chart illustrates the relative contribution of each feature to the combined model's predictive power, based on the Chi-squared Likelihood Ratio Test (LRT) from drop1 analysis. Academic and non-academic features are distinctly colored to highlight their respective impacts.
+```
+## Evaluate feature importance based on Chi-squared deviance reduction from drop1
 
-R
-
-# Evaluate feature importance based on Chi-squared deviance reduction from drop1
+``` r
 drop_results <- drop1(logistic_model, test = "Chisq")
 
 # Focus on relevant features defined in the analysis
@@ -539,9 +546,9 @@ ggplot(feature_importance_df, aes(x = Percentage, y = Feature_Label, fill = Feat
   )
 ```
 ![](graph1.png)<!-- -->
+## Analysis of Missed Students
 
 ``` r
-## Analysis of Missed Students
 
 This section quantifies how many actual dropouts were missed by the initial academic model and subsequently correctly identified by the more comprehensive combined model. This highlights the value of including non-academic features.
 
@@ -622,9 +629,9 @@ if (nrow(academically_strong_dropouts) == 0) {
 }
 ```
 ![](graph2.png)<!-- -->
+## Prediction Quadrants for Dropouts
 
 ``` r
-## Prediction Quadrants for Dropouts
 
 This quadrant plot categorizes actual dropouts based on their predicted probabilities from both the Academic and Combined models. It visually distinguishes between cases where both models detected dropout risk, where only one did, or where both missed.
 
@@ -695,9 +702,9 @@ if (nrow(dropout_data) == 0) {
 }
 ```
 ![](graph3.png)<!-- -->
+## Dropout Probability by Application Order
 
 ``` r
-## Dropout Probability by Application Order
 
 This line plot illustrates how the probability of dropout varies based on a student's application order (priority of their degree choice). This provides insights into the relationship between a student's initial preferences and their likelihood of persisting in their studies.
 
@@ -734,10 +741,10 @@ ggplot(dropout_by_order, aes(x = factor(application_order), y = dropout_probabil
   )
 ```
 ![](graph4.png)<!-- -->
+## Model Performance Comparison Table
 
 ```r
 
-## Model Performance Comparison Table
 R
 # Compute precision and F1-score for both models
 precision_academic <- as.numeric(cm_academic$byClass["Precision"])
