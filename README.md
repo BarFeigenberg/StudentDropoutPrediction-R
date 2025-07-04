@@ -31,11 +31,7 @@ We explore the importance of academic versus non-academic factors in predicting 
 ---
 
 # Environment Setup
-
-## Load Libraries
-
-This project uses several R packages for data manipulation, modeling, and visualization. All necessary libraries are loaded at the beginning of the script.
-
+## load libraries
 ```R
 # Load required libraries
 library(dplyr)
@@ -47,6 +43,12 @@ library(ggplot2)
 library(broom)
 library(gt)
 
+
+## Read Tables
+
+This project uses several R packages for data manipulation, modeling, and visualization. All necessary libraries are loaded at the beginning of the script.
+
+``` r
 # Set a seed for reproducibility
 set.seed(42)
 Load and Prepare Data
