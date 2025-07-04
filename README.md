@@ -537,11 +537,10 @@ ggplot(feature_importance_df, aes(x = Percentage, y = Feature_Label, fill = Feat
     plot.title = element_text(hjust = 0, face = "bold", size = 12),
     legend.position = "bottom"
   )
-
+```
 ![](graph1.png)<!-- -->
 
-
-
+``` r
 ## Analysis of Missed Students
 
 This section quantifies how many actual dropouts were missed by the initial academic model and subsequently correctly identified by the more comprehensive combined model. This highlights the value of including non-academic features.
