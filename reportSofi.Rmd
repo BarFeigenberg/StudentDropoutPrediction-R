@@ -1,0 +1,549 @@
+---
+title: "report"
+output:
+  pdf_document: default
+  html_document: default
+date: "2025-06-17"
+---
+
+```{r setup, include=FALSE, echo=FALSE, warning=FALSE, message=FALSE}
+# Load required libraries
+library(dplyr)
+library(readr)
+library(janitor)
+library(caret)
+library(pROC)
+library(ggplot2)
+library(broom)
+library(gt)
+
+# Set a seed for reproducibility
+set.seed(42)
+```
+
+## Load and Prepare Data
+```{r}
+# Load dataset, clean column names, and filter to Dropout or Graduate only
+df <- read_csv("students_dropout_academic_success.csv", show_col_types = FALSE) %>%
+  clean_names() %>%
+  filter(target %in% c("Dropout", "Graduate"))
+
+# Convert target to factor with 'Graduate' as the reference level
+df$target <- factor(df$target, levels = c("Graduate", "Dropout"))
+```
+
+## Feature Engineering: Academic Variables
+```{r}
+# Create academic performance features based on course results in both semesters
+df <- df %>%
+  mutate(
+    average_grade_year = rowMeans(
+      select(., curricular_units_1st_sem_grade, curricular_units_2nd_sem_grade),
+      na.rm = TRUE
+    ),
+    grade_difference = curricular_units_2nd_sem_grade - curricular_units_1st_sem_grade,
+    total_approved = curricular_units_1st_sem_approved + curricular_units_2nd_sem_approved,
+    total_enrolled = curricular_units_1st_sem_enrolled + curricular_units_2nd_sem_enrolled,
+    course_success_rate = ifelse(total_enrolled == 0, 0, total_approved / total_enrolled),
+    total_evaluated = curricular_units_1st_sem_evaluations + curricular_units_2nd_sem_evaluations,
+    exam_attempt_rate = ifelse(total_enrolled == 0, 0, total_evaluated / total_enrolled)
+  )
+```
+
+## Feature Engineering: Categorical Variables
+```{r}
+# Recode categorical variables: gender, application mode groups, and age groups
+# These transformations prepare categorical features for modeling
+df <- df %>%
+  mutate(
+    gender = factor(
+      gender,
+      levels = c(0, 1),
+      labels = c("Female", "Male")
+    ),
+    gender = relevel(gender, ref = "Female"),
+
+    application_mode_group = case_when(
+      application_mode == 1 ~ "1_Primary General Admission",
+      application_mode %in% c(17, 18) ~ "2_Subsequent General Admission",
+      application_mode %in% c(15, 39) ~ "3_International Admission",
+      application_mode %in% c(5, 16, 42, 43, 44, 51, 53, 57) ~ "4_Island Admission",
+      application_mode %in% c(7, 2, 10, 26, 27) ~ "5_Special Admission",
+      TRUE ~ "6_Other"
+    ),
+
+    age_group = case_when(
+      age_at_enrollment <= 18 ~ "Under 18",
+      age_at_enrollment <= 20 ~ "19-20",
+      age_at_enrollment <= 25 ~ "21-25",
+      age_at_enrollment < 120 ~ "Above 26",
+      TRUE ~ NA_character_
+    )
+  )
+
+# Convert grouped variables to factors with defined levels
+df$application_mode_group <- factor(df$application_mode_group)
+df$age_group <- factor(df$age_group, levels = c("Under 18", "19-20", "21-25", "Above 26"))
+
+```
+
+## Select Features for Modeling
+```{r}
+# Select relevant features for the logistic regression models
+# Includes academic performance, financial status, demographics, and target variable
+model_data <- df %>%
+  select(
+    admission_grade,
+    grade_difference,
+    exam_attempt_rate,
+    average_grade_year,
+    course_success_rate,
+    scholarship_holder,
+    debtor,
+    tuition_fees_up_to_date,
+    gender,
+    age_group,
+    application_mode_group,
+    target
+  )
+```
+
+## Split Data into Training and Testing Sets
+```{r}
+# Split the data into training (80%) and testing (20%) sets, stratified by target variable
+train_index <- createDataPartition(model_data$target, p = 0.8, list = FALSE)
+train_data <- model_data[train_index, ]
+test_data <- model_data[-train_index, ]
+
+# Ensure categorical variables in test set have the same factor levels as in the train set
+for (col in c("age_group", "application_mode_group", "gender")) {
+  train_data[[col]] <- factor(train_data[[col]], levels = levels(model_data[[col]]))
+  test_data[[col]] <- factor(test_data[[col]], levels = levels(model_data[[col]]))
+}
+```
+
+## Perform PCA on Academic and Financial Features
+```{r}
+# Perform PCA to reduce dimensionality of correlated academic performance features
+academic_cols <- c("average_grade_year", "course_success_rate")
+pca_academic <- prcomp(train_data[, academic_cols], scale. = TRUE)
+train_data$academic_achievement <- predict(pca_academic, newdata = train_data[, academic_cols])[, 1]
+test_data$academic_achievement <- predict(pca_academic, newdata = test_data[, academic_cols])[, 1]
+
+# Perform PCA to reduce dimensionality of financial status features
+financial_cols <- c("scholarship_holder", "debtor", "tuition_fees_up_to_date")
+pca_financial <- prcomp(train_data[, financial_cols], scale. = TRUE)
+train_data$financial_score <- predict(pca_financial, newdata = train_data[, financial_cols])[, 1]
+test_data$financial_score <- predict(pca_financial, newdata = test_data[, financial_cols])[, 1]
+```
+
+## Normalize Numeric Features
+```{r}
+# Normalize numerical features (including PCA scores) using centering and scaling
+numeric_cols <- c("admission_grade", "grade_difference", "exam_attempt_rate",
+                  "academic_achievement", "financial_score")
+preproc <- preProcess(train_data[, numeric_cols], method = c("center", "scale"))
+train_data[, numeric_cols] <- predict(preproc, train_data[, numeric_cols])
+test_data[, numeric_cols] <- predict(preproc, test_data[, numeric_cols])
+
+# Remove original features used in PCA to avoid collinearity in modeling
+train_data <- train_data %>% select(-all_of(c(academic_cols, financial_cols)))
+test_data <- test_data %>% select(-all_of(c(academic_cols, financial_cols)))
+```
+
+## Academic model
+```{r academic_model, warning=FALSE, message=FALSE}
+# Train logistic regression model using only academic-related features
+logistic_model_academic <- glm(target ~ academic_achievement + admission_grade + grade_difference + exam_attempt_rate, data = train_data, family = binomial)
+summary(logistic_model_academic)  # Display coefficients and significance
+drop1(logistic_model_academic, test = "Chisq")  # Test contribution of each variable
+
+# Predict dropout probabilities and classify based on 0.5 threshold
+predicted_probs_academic <- predict(logistic_model_academic, newdata = test_data, type = "response")
+predicted_classes_academic <- ifelse(predicted_probs_academic > 0.5, "Dropout", "Graduate") %>% as.factor()
+
+# Evaluate academic model performance with confusion matrix
+cm_academic <- confusionMatrix(predicted_classes_academic, test_data$target, positive = "Dropout")
+cm_academic
+```
+
+## Plot ROC Curve and Compute AUC for the academic model
+```{r}
+# Compute ROC curve and AUC for academic model
+roc_academic <- roc(test_data$target, predicted_probs_academic, levels = c("Graduate", "Dropout"), direction = "<")
+auc_value_academic <- auc(roc_academic)
+print(paste("Academic Model AUC:", round(auc_value_academic, 3)))
+```
+
+## Compute McFadden’s R² for the academic model
+```{r}
+# Calculate McFadden's pseudo-R² as a measure of model fit
+null_model <- glm(target ~ 1, data = train_data, family = binomial)
+R2_McFadden <- 1 - (logLik(logistic_model_academic) / logLik(null_model))
+print(paste("McFadden's R²:", round(R2_McFadden, 3)))
+```
+
+## Logistic Regression Model for the combined model
+```{r}
+# Train logistic regression model using all selected features (academic + non-academic)
+logistic_model <- glm(target ~ ., data = train_data, family = binomial)
+summary(logistic_model)  # View model summary
+drop1(logistic_model, test = "Chisq")  # Assess variable contributions
+```
+
+## Evaluate Model with Confusion Matrix for the combined model
+```{r}
+# Predict on test set using combined model and compute confusion matrix
+predicted_probs <- predict(logistic_model, newdata = test_data, type = "response")
+predicted_classes <- factor(ifelse(predicted_probs > 0.5, "Dropout", "Graduate"), levels = levels(test_data$target))
+
+cm <- confusionMatrix(predicted_classes, test_data$target, positive = "Dropout")
+print(cm)
+```
+
+## Plot ROC Curve and Compute AUC for the combined model
+```{r}
+# Calculate ROC curve and AUC for combined model predictions
+roc_obj <- roc(test_data$target, predicted_probs, levels = c("Graduate", "Dropout"), direction = "<")
+auc_value <- auc(roc_obj)
+print(paste("AUC:", round(auc_value, 3)))
+```
+
+## Compute McFadden’s R² for the combined model
+```{r}
+# Compute McFadden's pseudo-R² for the combined model
+null_model <- glm(target ~ 1, data = train_data, family = binomial)
+R2_McFadden <- 1 - (logLik(logistic_model) / logLik(null_model))
+print(paste("McFadden's R²:", round(R2_McFadden, 3)))
+```
+
+## Create Results DataFrame with Predictions
+```{r}
+# Generate predictions from the academic model for later comparison
+preds_academic_class <- predict(logistic_model_academic, newdata = test_data, type = "response")
+predicted_classes_academic <- ifelse(preds_academic_class > 0.5, "Dropout", "Graduate") %>% as.factor()
+
+# Create a dataframe aligning actual target labels with predictions and probabilities
+results_df <- data.frame(
+  actual_target = test_data$target,
+  predicted_academic = predicted_classes_academic,
+  prob_dropout_academic = preds_academic_class
+)
+```
+
+## Relative Importance of Features
+```{r}
+# Evaluate feature importance based on Chi-squared deviance reduction from drop1
+drop_results <- drop1(logistic_model, test = "Chisq")
+
+# Focus on relevant features defined in the analysis
+relevant_features <- c("academic_achievement", "admission_grade", "grade_difference", "exam_attempt_rate",
+                       "financial_score", "gender", "age_group", "application_mode_group")
+
+# Build a dataframe with relative contributions to model performance
+feature_importance_df <- data.frame(
+  Feature = rownames(drop_results),
+  ChiSq = drop_results$LRT
+) %>%
+  filter(Feature %in% relevant_features) %>%
+  filter(Feature != "<none>") %>%
+  mutate(
+    Percentage = (ChiSq / sum(ChiSq, na.rm=TRUE)) * 100,
+    Feature_Label = case_when(
+      Feature == "academic_achievement" ~ "Academic Achievement",
+      Feature == "admission_grade" ~ "Admission Grade",
+      Feature == "grade_difference" ~ "Grade Difference",
+      Feature == "exam_attempt_rate" ~ "Exam Attempt Rate",
+      Feature == "financial_score" ~ "Financial Score",
+      Feature == "gender" ~ "Gender",
+      Feature == "age_group" ~ "Age Group",
+      Feature == "application_mode_group" ~ "Application Mode",
+      TRUE ~ Feature
+    ),
+    Feature_Type = case_when(
+      Feature %in% c("academic_achievement", "admission_grade", "grade_difference", "exam_attempt_rate") ~ "Academic",
+      TRUE ~ "Non-Academic"
+    )
+  ) %>%
+  arrange(desc(Percentage))
+
+# Convert feature labels to ordered factors for plotting
+feature_importance_df$Feature_Label <- factor(feature_importance_df$Feature_Label,
+                                              levels = feature_importance_df$Feature_Label)
+
+# Plot relative importance of features as a horizontal bar chart
+ggplot(feature_importance_df, aes(x = Percentage, y = Feature_Label, fill = Feature_Type)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = c("Academic" = "#1e6091", "Non-Academic" = "#00afb9")) +
+  geom_text(aes(label = paste0(round(Percentage, 1), "%")), hjust = -0.1, size = 3.5) +
+  xlim(0, max(feature_importance_df$Percentage) * 1.15) +
+  labs(title = "Relative Importance of Features in Combined Model",
+       x = "Percentage Contribution to Deviance Explained (Chi-squared LRT)",
+       y = "Feature",
+       fill = "Feature Type") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0, face = "bold", size = 12),
+    legend.position = "bottom"
+  )
+``` 
+
+## Analysis of missed students
+```{r missed_analysis, warning=FALSE, message=FALSE}
+# Identify students who were actual dropouts but predicted as Graduates by the academic model
+missed_by_academic <- test_data[test_data$target == "Dropout" & results_df$predicted_academic == "Graduate", ]
+num_missed <- nrow(missed_by_academic)
+
+# Predict probabilities for these missed students using the combined model
+preds_combined_on_missed <- predict(logistic_model, newdata = missed_by_academic, type = "response")
+predicted_missed_classes_combined <- ifelse(preds_combined_on_missed > 0.5, "Dropout", "Graduate") %>% as.factor()
+
+# Calculate how many missed students are now correctly identified by the combined model
+caught <- sum(predicted_missed_classes_combined == "Dropout")
+percentage_caught <- (caught / num_missed) * 100
+
+cat("--- Analysis of Missed Students ---\n")
+cat(sprintf("Academic model missed %d students (actual dropouts).\n", num_missed))
+cat(sprintf("Combined model correctly identified %d (%.2f%%) of them.\n\n", caught, percentage_caught))
+
+# Prepare data for bar chart visualization of missed vs caught
+catch_data <- data.frame(
+  Category = c(sprintf("Missed by Academic\n(%d)", num_missed),
+               sprintf("Caught by Combined\n(%d)", caught)),
+  Count = c(num_missed, caught)
+)
+```
+
+## Academically Strong Dropouts Analysis
+```{r}
+academic_threshold <- 0  # Threshold for defining "academically strong" students
+
+# Filter dropouts who show strong academic indicators (e.g., above average scores)
+academically_strong_dropouts <- test_data %>%
+  filter(target == "Dropout",
+         academic_achievement > academic_threshold,
+         admission_grade > 0,
+         exam_attempt_rate > 0,
+         grade_difference >= -0.5)
+
+# Check if any students meet these criteria
+if (nrow(academically_strong_dropouts) == 0) {
+  message("No academically strong dropouts found with the current academic thresholds. Consider adjusting them.")
+} else {
+  # Predict dropout probabilities for these students using both models
+  probs_academic_strong_academic_model <- predict(logistic_model_academic, newdata = academically_strong_dropouts, type = "response")
+  probs_academic_strong_combined_model <- predict(logistic_model, newdata = academically_strong_dropouts, type = "response")
+
+  # Create a dataframe for plotting results
+  plot_data_strong <- data.frame(
+    P_Academic = probs_academic_strong_academic_model,
+    P_Combined = probs_academic_strong_combined_model,
+    Caught_by_Combined = ifelse(probs_academic_strong_combined_model > 0.5, "Caught", "Still Missed")
+  )
+
+  # Plot scatter showing probabilities of dropout in both models for academically strong dropouts
+  ggplot(plot_data_strong, aes(x = P_Academic, y = P_Combined, color = Caught_by_Combined)) +
+    geom_point(alpha = 0.7, size = 3) +
+    geom_hline(yintercept = 0.5, linetype = "dashed", color = "darkblue", size = 0.8) +
+    geom_vline(xintercept = 0.5, linetype = "dashed", color = "darkblue", size = 0.8) +
+    annotate("text", x=0.0, y=0.54, label="Threshold", color="darkblue", size=3, fontface="bold", hjust=0) +
+    annotate("text", x=0.49, y=0.02, label="Threshold", color="darkblue", angle=90, size=3, fontface="bold", hjust=0) +
+    scale_color_manual(values = c("Caught" = "limegreen", "Still Missed" = "firebrick3")) +
+    labs(title = "Probability of Dropout for Academically Strong Students",
+         subtitle = "Comparing Academic vs. Combined Model Predictions",
+         x = "Academic Model Probability",
+         y = "Combined Model Probability",
+         color = "Outcome by Combined Model") +
+    theme_minimal(base_size = 11) +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+      plot.subtitle = element_text(hjust = 0.5, size=12),
+      axis.title.x = element_text(size=12),
+      axis.title.y = element_text(size=12),
+      legend.position = "bottom"
+    ) +
+    scale_x_continuous(breaks = seq(0, 0.5, by = 0.1)) +
+    scale_y_continuous(breaks = seq(0, 1, by = 0.25)) +
+    coord_cartesian(xlim = c(0, 0.49))
+}
+
+```
+
+## Prediction Quadrants for Dropouts
+```{r}
+academic_threshold <- 0  # Threshold used for defining "good" academic standing (can be adjusted)
+
+# Filter all actual dropouts from the test set
+dropout_data <- test_data %>% filter(target == "Dropout")
+
+# Check if there are dropouts available for analysis
+if (nrow(dropout_data) == 0) {
+  message("No dropouts found for quadrant plot analysis. Consider checking your data or thresholds.")
+} else {
+  # Generate dropout probabilities from both models for the dropouts subset
+  probs_academic_on_strong <- predict(logistic_model_academic, newdata = dropout_data, type = "response")
+  probs_combined_on_strong <- predict(logistic_model, newdata = dropout_data, type = "response")
+
+  # Create a dataframe with probabilities and assign each case to a prediction quadrant
+  plot_data_quadrant <- data.frame(
+    P_Academic = probs_academic_on_strong,
+    P_Combined = probs_combined_on_strong
+  ) %>%
+    mutate(
+      Quadrant_Category = case_when(
+        P_Academic > 0.5 & P_Combined > 0.5 ~ "Both detected",
+        P_Academic <= 0.5 & P_Combined > 0.5 ~ "Only Academic missed",
+        P_Academic > 0.5 & P_Combined <= 0.5 ~ "Only Combined missed",
+        P_Academic <= 0.5 & P_Combined <= 0.5 ~ "Both missed"
+      )
+    )
+
+  # Set factor order for consistent legend display
+  plot_data_quadrant$Quadrant_Category <- factor(plot_data_quadrant$Quadrant_Category,
+                                                 levels = c("Both detected",
+                                                            "Only Academic missed",
+                                                            "Only Combined missed",
+                                                            "Both missed"))
+
+  # Plot scatter with quadrants, threshold lines, and color coding for prediction outcomes
+  ggplot(plot_data_quadrant, aes(x = P_Academic, y = P_Combined, color = Quadrant_Category)) +
+    geom_point(size = 2) +
+    geom_hline(yintercept = 0.5, linetype = "dashed", color = "darkblue", size = 0.8) +
+    geom_vline(xintercept = 0.5, linetype = "dashed", color = "darkblue", size = 0.8) +
+    annotate("text", x=0.0, y=0.53, label="Threshold", color="darkblue", size=3, fontface="bold", hjust=0) +
+    annotate("text", x=0.52, y=0.0, label="Threshold", color="darkblue", angle=90, size=3, fontface="bold", hjust=0) +
+    scale_color_manual(values = c(
+      "Both detected" = "darkgreen",
+      "Only Academic missed" = "limegreen",
+      "Only Combined missed" = "salmon",
+      "Both missed" = "firebrick3"
+    )) +
+    labs(title = "Prediction Quadrants for Dropouts",
+         subtitle = "Comparing Academic vs. Combined Model Predictions",
+         x = "Academic Model Probability",
+         y = "Combined Model Probability",
+         color = "Prediction Outcome Category") +
+    theme_minimal(base_size = 14) +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+      plot.subtitle = element_text(hjust = 0.5, size = 12),
+      axis.title.x = element_text(size=12),
+      axis.title.y = element_text(size=12),
+      legend.position = "bottom",
+      legend.title = element_blank()
+    ) +
+    coord_cartesian(xlim = c(0, 1), ylim = c(0, 1))
+}
+```
+
+## Dropout Probability by Application Order
+```{r}
+dropout_by_order <- df %>%
+  filter(application_order != 0) %>%
+  group_by(application_order) %>%
+  summarise(
+    total = n(),
+    dropouts = sum(target == "Dropout"),
+    dropout_probability = dropouts / total
+  ) %>%
+  ungroup()
+# Plot dropout probability as a function of application order priority
+# This line chart helps visualize how the likelihood of dropout varies by students' application choices
+ggplot(dropout_by_order, aes(x = factor(application_order), y = dropout_probability, group = 1)) +
+  geom_line(color = "black", size = 1.2) +  # Connect points with a line
+  geom_point(color = "black", size = 3) +   # Add data points on the line
+  labs(
+    title = "Dropout Probability by Degree Ranking",
+    subtitle = "Percentage of students who dropped out for each Application Order",
+    x = "Application Order (1 = Highest Priority, 6 = Lowest Priority)",
+    y = "Dropout Probability"
+  ) +
+  scale_y_continuous(labels = scales::percent) +  # Display y-axis as percentages
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+    plot.subtitle = element_text(hjust = 0.5, size = 12),
+    axis.text.x = element_text(hjust = 1),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12)
+  )
+
+```
+
+## Model Performance Comparison Table
+```{r}
+# Compute precision and F1-score for both models
+precision_academic <- as.numeric(cm_academic$byClass["Precision"])
+precision_combined <- as.numeric(cm$byClass["Precision"])
+
+f1_academic <- as.numeric(cm_academic$byClass["F1"])
+f1_combined <- as.numeric(cm$byClass["F1"])
+
+# Add the new metrics to the results dataframe
+results_df <- data.frame(
+  Model = c("Academic", "Combined"),
+  Accuracy = c(
+    as.numeric(cm_academic$overall["Accuracy"]),
+    as.numeric(cm$overall["Accuracy"])
+  ),
+  Precision = c(precision_academic, precision_combined),
+  Sensitivity = c(
+    as.numeric(cm_academic$byClass["Sensitivity"]),
+    as.numeric(cm$byClass["Sensitivity"])
+  ),
+  F1 = c(f1_academic, f1_combined),
+  AUC = c(
+    as.numeric(auc_value_academic),
+    as.numeric(auc_value)
+  ),
+  McFadden_R2 = c(
+    as.numeric(1 - (logLik(logistic_model_academic) / logLik(null_model))),
+    as.numeric(1 - (logLik(logistic_model) / logLik(null_model)))
+  )
+)
+
+# Round metrics for presentation
+results_df <- results_df %>%
+  mutate(
+    Accuracy = round(Accuracy, 3),
+    Precision = round(Precision, 3),
+    Sensitivity = round(Sensitivity, 3),
+    F1 = round(F1, 3),
+    AUC = round(AUC, 3),
+    McFadden_R2 = round(McFadden_R2, 3)
+  )
+
+# Build and format the updated gt table
+gt_table <- results_df %>%
+  gt() %>%
+  tab_header(
+    title = "Model Performance Comparison"
+  ) %>%
+  cols_label(
+    Model = "Model",
+    Accuracy = "Accuracy",
+    Precision = "Precision",
+    Sensitivity = "Sensitivity",
+    F1 = "F1 Score",
+    AUC = "AUC",
+    McFadden_R2 = "McFadden R²"
+  ) %>%
+  fmt_number(
+    columns = c(Accuracy, Precision, Sensitivity, F1, AUC, McFadden_R2),
+    decimals = 3
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = everything()
+  ) %>%
+  tab_options(
+    table.border.top.width = px(2),
+    table.border.bottom.width = px(2),
+    column_labels.border.bottom.width = px(1),
+    table_body.hlines.width = px(1),
+    table_body.vlines.width = px(1)
+  )
+
+# Display the table
+gt_table
+```
